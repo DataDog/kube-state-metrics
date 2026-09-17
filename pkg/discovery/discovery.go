@@ -108,10 +108,9 @@ func (r *CRDiscoverer) StartDiscovery(ctx context.Context, config *rest.Config) 
 	}
 	// Respect context cancellation.
 	go func() {
-		<- ctx.Done()
+		<-ctx.Done()
 		klog.InfoS("context cancelled, stopping discovery")
 		close(stopper)
-		return
 	}()
 	go informer.Run(stopper)
 	return nil
