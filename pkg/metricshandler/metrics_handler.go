@@ -41,6 +41,22 @@ import (
 	"k8s.io/kube-state-metrics/v2/pkg/options"
 )
 
+// negotiableFormats lists the exposition formats considered during content
+// negotiation, in order of preference. It matches the list used by the
+// deprecated expfmt.NegotiateIncludingOpenMetrics so negotiation is unchanged;
+// anything other than OpenMetrics is served as plain text below.
+var negotiableFormats = func() []expfmt.Format {
+	openMetrics001, _ := expfmt.NewOpenMetricsFormat(expfmt.OpenMetricsVersion_0_0_1)
+	return []expfmt.Format{
+		expfmt.NewFormat(expfmt.TypeOpenMetrics),
+		openMetrics001,
+		expfmt.NewFormat(expfmt.TypeProtoDelim),
+		expfmt.NewFormat(expfmt.TypeProtoText),
+		expfmt.NewFormat(expfmt.TypeProtoCompact),
+		expfmt.NewFormat(expfmt.TypeTextPlain),
+	}
+}()
+
 // MetricsHandler is a http.Handler that exposes the main kube-state-metrics
 // /metrics endpoint. It allows concurrent reconfiguration at runtime.
 type MetricsHandler struct {
@@ -192,12 +208,20 @@ func (m *MetricsHandler) Run(ctx context.Context) error {
 // ServeHTTP implements the http.Handler interface. It writes all generated metrics to the response body.
 // Note that all operations defined within this procedure are performed at every request.
 func (m *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Snapshot the writers instead of holding the lock for the whole response.
+	// BuildWriters and ConfigureSharding need the write lock, so a slow client
+	// would otherwise delay a re-shard -- and since a waiting writer blocks new
+	// readers, every scrape queued behind it too. Writers are replaced wholesale
+	// rather than mutated, so a snapshot stays readable and self-consistent even
+	// if it is rebuilt mid-response.
 	m.mtx.RLock()
-	defer m.mtx.RUnlock()
+	writers := m.metricsWriters
+	m.mtx.RUnlock()
+
 	resHeader := w.Header()
 	var writer io.Writer = w
 
-	contentType := expfmt.NegotiateIncludingOpenMetrics(r.Header)
+	contentType := expfmt.NegotiateAccept(r.Header, negotiableFormats...)
 
 	// We do not support protobuf at the moment. Fall back to FmtText if the negotiated exposition format is not FmtOpenMetrics See: https://github.com/kubernetes/kube-state-metrics/issues/2022.
 
@@ -216,6 +240,10 @@ func (m *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if part == "gzip" || strings.HasPrefix(part, "gzip;") {
 				writer = gzip.NewWriter(writer)
 				resHeader.Set("Content-Encoding", "gzip")
+				// Stop at the first match, as the upstream implementation does.
+				// Wrapping twice would leave the inner writer unclosed, so its
+				// stream would never be finalised and the body would be unusable.
+				break
 			}
 		}
 	}
@@ -228,10 +256,10 @@ func (m *MetricsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Sanitizing first can suppress HELP/TYPE headers for metrics whose
 	// only active writer is later in the list but its earlier same-named
 	// counterpart was filtered out.
-	activeWriters := m.metricsWriters
+	activeWriters := writers
 	if requestedResources != nil || excludedResources != nil {
-		activeWriters = make(metricsstore.MetricsWriterList, 0, len(m.metricsWriters))
-		for _, mw := range m.metricsWriters {
+		activeWriters = make(metricsstore.MetricsWriterList, 0, len(writers))
+		for _, mw := range writers {
 			if requestedResources != nil {
 				if _, ok := requestedResources[mw.ResourceName]; !ok {
 					continue

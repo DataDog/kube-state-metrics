@@ -19,8 +19,8 @@ package customresourcestate
 import (
 	"errors"
 	"fmt"
-	"math"
-	"sort"
+	"maps"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -39,12 +39,18 @@ import (
 func compile(resource Resource) ([]compiledFamily, error) {
 	var families []compiledFamily
 	// Explicitly add GVK labels to all CR metrics.
-	if resource.CommonLabels == nil {
-		resource.CommonLabels = map[string]string{}
-	}
-	resource.CommonLabels[customResourceState+"_group"] = resource.GroupVersionKind.Group
-	resource.CommonLabels[customResourceState+"_version"] = resource.GroupVersionKind.Version
-	resource.CommonLabels[customResourceState+"_kind"] = resource.GroupVersionKind.Kind
+	//
+	// resource is a copy, but CommonLabels is a map, so it is shared with the
+	// configured resource and with every other copy made from it -- wildcard
+	// resolution produces one per discovered GVK. Writing the GVK labels in
+	// place would have each copy overwrite the last one's values in a map they
+	// all point at. Build a new map instead.
+	commonLabels := make(map[string]string, len(resource.CommonLabels)+3)
+	maps.Copy(commonLabels, resource.CommonLabels)
+	commonLabels[customResourceState+"_group"] = resource.GroupVersionKind.Group
+	commonLabels[customResourceState+"_version"] = resource.GroupVersionKind.Version
+	commonLabels[customResourceState+"_kind"] = resource.GroupVersionKind.Kind
+	resource.CommonLabels = commonLabels
 	for _, f := range resource.Metrics {
 		family, err := compileFamily(f, resource)
 		if err != nil {
@@ -161,10 +167,12 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 			return nil, errors.New("expected each.gauge to not be nil")
 		}
 		cc, err := compileCommon(m.Gauge.MetricMeta)
-		cc.t = metric.Gauge
 		if err != nil {
+			// compileCommon returns a nil *compiledCommon alongside its error,
+			// so nothing may be assigned through cc before this check.
 			return nil, fmt.Errorf("each.gauge: %w", err)
 		}
+		cc.t = metric.Gauge
 		valueFromPath, err := compilePath(m.Gauge.ValueFrom)
 		if err != nil {
 			return nil, fmt.Errorf("each.gauge.valueFrom: %w", err)
@@ -180,10 +188,12 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 			return nil, errors.New("expected each.info to not be nil")
 		}
 		cc, err := compileCommon(m.Info.MetricMeta)
-		cc.t = metric.Info
 		if err != nil {
+			// compileCommon returns a nil *compiledCommon alongside its error,
+			// so nothing may be assigned through cc before this check.
 			return nil, fmt.Errorf("each.info: %w", err)
 		}
+		cc.t = metric.Info
 		return &compiledInfo{
 			compiledCommon: *cc,
 			labelFromKey:   m.Info.LabelFromKey,
@@ -193,10 +203,12 @@ func newCompiledMetric(m Metric) (compiledMetric, error) {
 			return nil, errors.New("expected each.stateSet to not be nil")
 		}
 		cc, err := compileCommon(m.StateSet.MetricMeta)
-		cc.t = metric.StateSet
 		if err != nil {
+			// compileCommon returns a nil *compiledCommon alongside its error,
+			// so nothing may be assigned through cc before this check.
 			return nil, fmt.Errorf("each.stateSet: %w", err)
 		}
+		cc.t = metric.StateSet
 		valueFromPath, err := compilePath(m.StateSet.ValueFrom)
 		if err != nil {
 			return nil, fmt.Errorf("each.stateSet.valueFrom: %w", err)
@@ -221,7 +233,7 @@ type compiledGauge struct {
 
 func (c *compiledGauge) Values(v interface{}) (result []eachValue, errs []error) {
 	onError := func(err error) {
-		errs = append(errs, fmt.Errorf("%s: %v", c.Path(), err))
+		errs = append(errs, fmt.Errorf("%s: %w", c.Path(), err))
 	}
 
 	switch iter := v.(type) {
@@ -313,7 +325,7 @@ type compiledInfo struct {
 
 func (c *compiledInfo) Values(v interface{}) (result []eachValue, errs []error) {
 	onError := func(err ...error) {
-		errs = append(errs, fmt.Errorf("%s: %v", c.Path(), err))
+		errs = append(errs, fmt.Errorf("%s: %w", c.Path(), errors.Join(err...)))
 	}
 
 	switch iter := v.(type) {
@@ -400,11 +412,26 @@ func (c *compiledStateSet) Values(v interface{}) (result []eachValue, errs []err
 	return c.values(v)
 }
 
+// fullValuePath returns the path the state set value is resolved from, including
+// valueFrom if it is set, so that errors point at the field that actually failed.
+func (c *compiledStateSet) fullValuePath() valuePath {
+	if len(c.ValueFrom) == 0 {
+		return c.path
+	}
+	return append(append(valuePath{}, c.path...), c.ValueFrom...)
+}
+
 func (c *compiledStateSet) values(v interface{}) (result []eachValue, errs []error) {
 	comparable := c.ValueFrom.Get(v)
+	if comparable == nil {
+		// The path does not resolve to a value, which is expected for status fields
+		// that do not exist yet at resource creation time. Report no metrics instead
+		// of an error, consistent with how the other metric types handle nil values.
+		return nil, nil
+	}
 	value, ok := comparable.(string)
 	if !ok {
-		return []eachValue{}, []error{fmt.Errorf("%s: expected value for path to be string, got %T", c.path, comparable)}
+		return nil, []error{fmt.Errorf("%s: expected value for path to be string, got %T", c.fullValuePath(), comparable)}
 	}
 
 	for _, entry := range c.List {
@@ -419,30 +446,27 @@ func (c *compiledStateSet) values(v interface{}) (result []eachValue, errs []err
 	return
 }
 
-// less compares two maps of labels by keys and values
-func less(a, b map[string]string) bool {
-	var aKeys, bKeys sort.StringSlice
+// compareLabels compares two maps of labels by keys and values, returning
+// a negative, zero, or positive int for use with slices.SortFunc.
+func compareLabels(a, b map[string]string) int {
+	var aKeys, bKeys []string
 	for k := range a {
 		aKeys = append(aKeys, k)
 	}
 	for k := range b {
 		bKeys = append(bKeys, k)
 	}
-	aKeys.Sort()
-	bKeys.Sort()
-	for i := 0; i < int(math.Min(float64(len(aKeys)), float64(len(bKeys)))); i++ {
-		if aKeys[i] != bKeys[i] {
-			return aKeys[i] < bKeys[i]
+	slices.Sort(aKeys)
+	slices.Sort(bKeys)
+	for i := 0; i < min(len(aKeys), len(bKeys)); i++ {
+		if c := strings.Compare(aKeys[i], bKeys[i]); c != 0 {
+			return c
 		}
-
-		va := a[aKeys[i]]
-		vb := b[bKeys[i]]
-		if va == vb {
-			continue
+		if c := strings.Compare(a[aKeys[i]], b[bKeys[i]]); c != 0 {
+			return c
 		}
-		return va < vb
 	}
-	return len(aKeys) < len(bKeys)
+	return len(aKeys) - len(bKeys)
 }
 
 func (c compiledGauge) value(it interface{}) (*eachValue, error) {
@@ -487,7 +511,7 @@ func (e eachValue) ToMetric() *metric.Metric {
 		keys = append(keys, k)
 	}
 	// make it deterministic
-	sort.Strings(keys)
+	slices.Sort(keys)
 	for _, key := range keys {
 		values = append(values, e.Labels[key])
 	}
@@ -525,7 +549,7 @@ func addPathLabels(obj interface{}, labels map[string]valuePath, result map[stri
 			stars = append(stars, k)
 		}
 	}
-	sort.Strings(stars)
+	slices.Sort(stars)
 	for _, star := range stars {
 		m := labels[star].Get(obj)
 		if kv, ok := m.(map[string]interface{}); ok {
@@ -654,7 +678,12 @@ func compilePath(path []string) (out valuePath, _ error) {
 							i += len(s)
 						}
 						if i < 0 || i >= len(s) {
-							return fmt.Errorf("list index out of range: %s", part)
+							// The path does not resolve. Returning an error here
+							// would hand it back as the resolved *value*, which
+							// then surfaces as a label value or a "expected number
+							// but was ..." message, so report it the same way every
+							// other unresolvable path does.
+							return nil
 						}
 						return s[i]
 					}
@@ -713,8 +742,8 @@ func scrapeValuesFor(e compiledEach, obj map[string]interface{}) ([]eachValue, [
 	result, errs := e.Values(v)
 
 	// return results in a consistent order (simplifies testing)
-	sort.Slice(result, func(i, j int) bool {
-		return less(result[i].Labels, result[j].Labels)
+	slices.SortFunc(result, func(a, b eachValue) int {
+		return compareLabels(a.Labels, b.Labels)
 	})
 	return result, errs
 }
