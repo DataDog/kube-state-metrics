@@ -1,0 +1,11 @@
+upstream: https://github.com/kubernetes/kube-state-metrics
+repo: git@github.com:DataDog/kube-state-metrics.git
+tagMatchers:
+  - v2.19.*
+  - v2.20.*
+  - v2.21.*
+branchTemplate: "v{{ .Major }}.{{ .Minor }}.{{ .Patch | atoi | add 1 | toString }}-dd"
+patchFolders:
+  - patches/global
+  - patches/v2.19.*
+release: false
