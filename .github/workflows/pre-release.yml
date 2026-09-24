@@ -1,6 +1,7 @@
 name: Pre-release
 
-# on:
+on:
+  workflow_dispatch:
 #   push:
 #     tags:
 #       - 'v*'
