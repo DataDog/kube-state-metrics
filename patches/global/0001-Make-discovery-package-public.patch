@@ -1,0 +1,93 @@
+From 29e500020566662d754894deef49a38921ffcf9b Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9na=C3=AFc=20Huard?= <lenaic.huard@datadoghq.com>
+Date: Wed, 15 Apr 2026 20:54:27 +0200
+Subject: [PATCH 1/2] Make discovery package public
+
+Move internal/discovery/ to pkg/discovery/ so that external consumers
+of the kube-state-metrics library can use the CRD discovery mechanism.
+
+The customresourcestate.FromConfig() function requires a
+*discovery.CRDiscoverer parameter. Since discovery is an internal
+package, external consumers cannot construct or pass this type.
+Moving it to pkg/ makes the API usable by projects that embed
+kube-state-metrics as a library.
+---
+ pkg/app/server.go                             | 2 +-
+ pkg/customresourcestate/config.go             | 2 +-
+ {internal => pkg}/discovery/discovery.go      | 0
+ {internal => pkg}/discovery/discovery_test.go | 0
+ {internal => pkg}/discovery/types.go          | 0
+ tests/e2e/crd_informer_updatefunc_test.go     | 2 +-
+ tests/e2e/discovery_test.go                   | 2 +-
+ 7 files changed, 4 insertions(+), 4 deletions(-)
+ rename {internal => pkg}/discovery/discovery.go (100%)
+ rename {internal => pkg}/discovery/discovery_test.go (100%)
+ rename {internal => pkg}/discovery/types.go (100%)
+
+diff --git a/pkg/app/server.go b/pkg/app/server.go
+index e1fdcc52..812eb7ed 100644
+--- a/pkg/app/server.go
++++ b/pkg/app/server.go
+@@ -51,7 +51,7 @@ import (
+ 	"github.com/prometheus/common/version"
+ 	"github.com/prometheus/exporter-toolkit/web"
+ 
+-	"k8s.io/kube-state-metrics/v2/internal/discovery"
++	"k8s.io/kube-state-metrics/v2/pkg/discovery"
+ 	"k8s.io/kube-state-metrics/v2/internal/store"
+ 	"k8s.io/kube-state-metrics/v2/pkg/allowdenylist"
+ 	"k8s.io/kube-state-metrics/v2/pkg/customresourcestate"
+diff --git a/pkg/customresourcestate/config.go b/pkg/customresourcestate/config.go
+index a9e47614..5a7d2fe3 100644
+--- a/pkg/customresourcestate/config.go
++++ b/pkg/customresourcestate/config.go
+@@ -26,7 +26,7 @@ import (
+ 	"k8s.io/apimachinery/pkg/runtime/schema"
+ 	"k8s.io/klog/v2"
+ 
+-	"k8s.io/kube-state-metrics/v2/internal/discovery"
++	"k8s.io/kube-state-metrics/v2/pkg/discovery"
+ 	"k8s.io/kube-state-metrics/v2/pkg/customresource"
+ 	"k8s.io/kube-state-metrics/v2/pkg/util"
+ )
+diff --git a/internal/discovery/discovery.go b/pkg/discovery/discovery.go
+similarity index 100%
+rename from internal/discovery/discovery.go
+rename to pkg/discovery/discovery.go
+diff --git a/internal/discovery/discovery_test.go b/pkg/discovery/discovery_test.go
+similarity index 100%
+rename from internal/discovery/discovery_test.go
+rename to pkg/discovery/discovery_test.go
+diff --git a/internal/discovery/types.go b/pkg/discovery/types.go
+similarity index 100%
+rename from internal/discovery/types.go
+rename to pkg/discovery/types.go
+diff --git a/tests/e2e/crd_informer_updatefunc_test.go b/tests/e2e/crd_informer_updatefunc_test.go
+index 6f3589b3..de8d1ca0 100644
+--- a/tests/e2e/crd_informer_updatefunc_test.go
++++ b/tests/e2e/crd_informer_updatefunc_test.go
+@@ -28,7 +28,7 @@ import (
+ 	"k8s.io/klog/v2"
+ 
+ 	"k8s.io/kube-state-metrics/v2/internal"
+-	"k8s.io/kube-state-metrics/v2/internal/discovery"
++	"k8s.io/kube-state-metrics/v2/pkg/discovery"
+ 	"k8s.io/kube-state-metrics/v2/pkg/options"
+ 	ksmFramework "k8s.io/kube-state-metrics/v2/tests/e2e/framework"
+ )
+diff --git a/tests/e2e/discovery_test.go b/tests/e2e/discovery_test.go
+index f4c21abb..ec48a9ca 100644
+--- a/tests/e2e/discovery_test.go
++++ b/tests/e2e/discovery_test.go
+@@ -29,7 +29,7 @@ import (
+ 	"k8s.io/klog/v2"
+ 
+ 	"k8s.io/kube-state-metrics/v2/internal"
+-	"k8s.io/kube-state-metrics/v2/internal/discovery"
++	"k8s.io/kube-state-metrics/v2/pkg/discovery"
+ 	"k8s.io/kube-state-metrics/v2/pkg/options"
+ )
+ 
+-- 
+2.55.0
+

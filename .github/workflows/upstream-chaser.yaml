@@ -1,0 +1,22 @@
+name: Upstream Chaser
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 8 * * 1'
+
+jobs:
+  upstream-chaser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v4
+        with:
+          go-version: stable
+
+      - name: Install upstream-chaser
+        run: go install github.com/ddoghq/upstream-chaser@latest
+
+      - name: Run upstream-chaser
+        run: upstream-chaser --config upstream-chaser-config.yaml sync --dry-run

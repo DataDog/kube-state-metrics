@@ -1,0 +1,33 @@
+From f121899320f2c5eeafab9ce24f74d15e0dd743b6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?L=C3=A9na=C3=AFc=20Huard?= <lenaic.huard@datadoghq.com>
+Date: Wed, 3 Jun 2026 11:12:43 +0200
+Subject: [PATCH 2/2] fix(discovery): Stop the discoverer when the context is
+ canceled
+
+---
+ pkg/discovery/discovery.go | 9 ++++-----
+ 1 file changed, 4 insertions(+), 5 deletions(-)
+
+diff --git a/pkg/discovery/discovery.go b/pkg/discovery/discovery.go
+index 55a79fdd..e3ba042a 100644
+--- a/pkg/discovery/discovery.go
++++ b/pkg/discovery/discovery.go
+@@ -108,11 +108,10 @@ func (r *CRDiscoverer) StartDiscovery(ctx context.Context, config *rest.Config)
+ 	}
+ 	// Respect context cancellation.
+ 	go func() {
+-		for range ctx.Done() {
+-			klog.InfoS("context cancelled, stopping discovery")
+-			close(stopper)
+-			return
+-		}
++		<- ctx.Done()
++		klog.InfoS("context cancelled, stopping discovery")
++		close(stopper)
++		return
+ 	}()
+ 	go informer.Run(stopper)
+ 	return nil
+-- 
+2.55.0
+
